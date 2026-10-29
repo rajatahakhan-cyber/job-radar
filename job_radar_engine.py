@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 WORKSPACE_DIR = os.path.dirname(os.path.abspath(__file__))
 SEEN_JOBS_FILE = os.path.join(WORKSPACE_DIR, "seen_jobs.json")
 NTFY_TOPIC = "raja-job-radar-2026"
-MAX_AGE_SECONDS = 86400  # Strictly 24 hours: ONLY jobs posted TODAY!
+MAX_AGE_SECONDS = 7200  # Strictly 2 hours: ONLY ultra-fresh postings from the last 30-120 minutes!
 
 # Load seen jobs
 if os.path.exists(SEEN_JOBS_FILE):
@@ -106,11 +106,22 @@ REMOTE_HYBRID_SIGNALS = [
     r'\bremote-first\b'
 ]
 
-MANDATORY_STUDENT_SIGNALS = [
-    r'\bworking student\b', r'\bwerkstudent\b', r'\bwerkstudentin\b',
-    r'\bintern\b', r'\binternship\b', r'\bpraktikant\b', r'\bpraktikum\b',
-    r'\bstudent\b', r'\bstudentische\b', r'\bstudent job\b', r'\bhiwi\b',
-    r'\bgraduate trainee\b', r'\bstudent trainee\b', r'\btrainee\b'
+MANDATORY_ENGLISH_STUDENT_SIGNALS = [
+    r'\bworking student\b', r'\bintern\b', r'\binternship\b',
+    r'\bstudent trainee\b', r'\btrainee\b', r'\bstudent assistant\b',
+    r'\bstudent job\b', r'\bgraduate trainee\b'
+]
+
+GERMAN_TITLE_KNOCKOUT = [
+    r'\bwerkstudent\b', r'\bwerkstudentin\b', r'\bwerkstudierende\b',
+    r'\bpraktikant\b', r'\bpraktikantin\b', r'\bpraktikum\b',
+    r'\bverkauf\b', r'\bvertrieb\b', r'\beinkauf\b', r'\bbauprojektmanagement\b',
+    r'\bentwicklung\b', r'\bverwaltung\b', r'\bbereich\b', r'\babteilung\b',
+    r'\bleitung\b', r'\bsachbearbeiter\b', r'\bassistenz\b', r'\bmitarbeiter\b',
+    r'\bkundenberatung\b', r'\bberatung\b', r'\bfahrzeugankauf\b', r'\bkonstruktion\b',
+    r'\bqualitätsmanagement\b', r'\bproduktionsoptimierung\b', r'\barbeitsvorbereitung\b',
+    r'\bvertriebsinnendienst\b', r'\bdigitales lernen\b', r'\bim bereich\b',
+    r'\bin der\b', r'\bfür das\b', r'\bfür die\b', r':in\b', r'\*in\b'
 ]
 
 SENIOR_KNOCKOUT_SIGNALS = [
@@ -118,19 +129,22 @@ SENIOR_KNOCKOUT_SIGNALS = [
     r'\bdirector\b', r'\bvp\b', r'\bchief\b', r'\bmanager\b'
 ]
 
+def is_title_in_german(title):
+    t_lower = title.lower()
+    return any(re.search(pat, t_lower) for pat in GERMAN_TITLE_KNOCKOUT)
+
 def is_student_or_intern_job(title, description=""):
     combined = f"{title} {description}".lower()
     title_lower = title.lower()
     
-    has_student_in_title = any(re.search(pat, title_lower) for pat in MANDATORY_STUDENT_SIGNALS)
-    has_student_in_desc = any(re.search(pat, combined) for pat in MANDATORY_STUDENT_SIGNALS)
-    
-    # Must have student/intern signal
-    if not (has_student_in_title or has_student_in_desc):
-        return False
-        
+    # Must have explicit English student signal
+    has_student = any(re.search(pat, title_lower) for pat in MANDATORY_ENGLISH_STUDENT_SIGNALS)
+    if not has_student:
+        if not any(re.search(pat, combined) for pat in MANDATORY_ENGLISH_STUDENT_SIGNALS):
+            return False
+            
     # Knockout senior roles unless title explicitly states working student/intern
-    if not has_student_in_title:
+    if not has_student:
         if any(re.search(pat, title_lower) for pat in SENIOR_KNOCKOUT_SIGNALS):
             return False
             
@@ -142,7 +156,8 @@ def is_written_in_german(text):
         return False
     de_count = sum(1 for w in words if w in GERMAN_STOPWORDS)
     en_count = sum(1 for w in words if w in ENGLISH_STOPWORDS)
-    return de_count > en_count and de_count > 10
+    # If 3 or more German stopwords appear or German exceeds English, it's German!
+    return de_count >= 3 or (de_count > en_count)
 
 def is_marketing_or_hr(title, text):
     for pattern in KNOCKOUT_ROLES:
@@ -150,14 +165,54 @@ def is_marketing_or_hr(title, text):
             return True
     return False
 
+HARD_GERMAN_INDICATORS = [
+    r'\bfluent\b.*?\bgerman\b',
+    r'\bgerman\b.*?\bfluent\b',
+    r'\bfluency in (?:both )?(?:german|english)',
+    r'\b(?:strong|solid|excellent|very good|good|proficient|proficiency|knowledge of|command of|skills in)\b.*?\bgerman\b',
+    r'\bgerman\b.*?\b(?:skills|knowledge|proficiency|fluency|command|competence)\b',
+    r'\b(?:german and english|english and german)\b',
+    r'\bboth german and english\b',
+    r'\bgerman\b.*?\b(?:is a must|is mandatory|is required|required|prerequisite|expected|essential|necessary)\b',
+    r'\bgerman\b.*?\b(?:b2|c1|c2|native)\b',
+    r'\b(?:speak|spoken|written|writing|communicat\w*)\b.*?\bgerman\b',
+    r'\bgerman\b.*?\b(?:speak|spoken|written|writing|communicat\w*)\b',
+    r'\blanguage(?:s)?\b.*?\bgerman\b',
+    r'\b(?:bilingual|multilingual)\b.*?\bgerman\b',
+    r'\bverhandlungssicher\b',
+    r'\bdeutschkenntnisse\b'
+]
+
+SOFT_GERMAN_INDICATORS = [
+    r'\bno german (?:is )?required\b',
+    r'\bgerman (?:is )?not (?:strictly )?(?:required|mandatory|necessary)\b',
+    r'\bgerman\b.*?\b(?:is )?(?:a (?:big |great )?plus|an advantage|nice[- ]to[- ]have|beneficial|optional|welcomed|appreciated|helpful)\b',
+    r'\b(?:a plus|nice[- ]to[- ]have)\b.*?\bgerman\b',
+    r'\bbasic\b.*?\bgerman\b',
+    r'\bgerman (?:a1|a2|b1)\b',
+    r'\b(?:willingness to learn|courses? available|help you learn)\b.*?\bgerman\b',
+    r'\benglish is (?:enough|sufficient|our (?:working|company|primary|team|daily) language)\b'
+]
+
 def check_german_proficiency_barrier(text):
     text_lower = text.lower()
-    has_soft_pass = any(re.search(pat, text_lower) for pat in SOFT_GERMAN_ALLOWED)
-    has_hard_req = any(re.search(pat, text_lower) for pat in HARD_GERMAN_REQUIREMENTS)
+    sentences = re.split(r'[\n\r•\.\;\-–]\s*', text_lower)
     
-    if has_hard_req and not has_soft_pass:
-        return True, "Demands fluent German / C1"
-    
+    for s in sentences:
+        s = s.strip()
+        if not s or ('german' not in s and 'deutsch' not in s):
+            continue
+            
+        # 1. If this specific sentence explicitly marks German as soft/optional, it passes!
+        is_soft = any(re.search(soft, s) for soft in SOFT_GERMAN_INDICATORS)
+        if is_soft:
+            continue
+            
+        # 2. If this specific sentence has a hard German demand
+        is_hard = any(re.search(hard, s) for hard in HARD_GERMAN_INDICATORS)
+        if is_hard:
+            return True, f'Demands German in requirement: "{s}"'
+            
     return False, "Safe English Opportunity"
 
 FOREIGN_LOCATIONS_KNOCKOUT = [
@@ -305,13 +360,132 @@ def fetch_from_jobicy():
             return jobs
     except Exception as e:
         print(f"Error fetching from Jobicy: {e}")
+def fetch_from_arbeitsagentur():
+    """Ingests official German Job Exchange (Bundesagentur für Arbeit) which covers:
+       - Every postal code and regional employer in Ulm, Biberach, Heidenheim, Stuttgart, Munich
+       - StepStone & Xing partner job feeds
+       - EURES (European Employment Services for Germany)
+    """
+    cities = [("Ulm", 50), ("Stuttgart", 50), ("München", 50)]
+    jobs = []
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
+        'X-API-Key': 'jobboerse-jobsuche'
+    }
+    import ssl
+    ctx = ssl._create_unverified_context()
+    for city, radius in cities:
+        for kw in ["Working Student", "Werkstudent"]:
+            encoded_kw = urllib.parse.quote(kw)
+            encoded_city = urllib.parse.quote(city)
+            url = f"https://rest.arbeitsagentur.de/jobboerse/jobsuche-service/pc/v6/jobs?was={encoded_kw}&wo={encoded_city}&umkreis={radius}&page=1&size=25"
+            try:
+                req = urllib.request.Request(url, headers=headers)
+                with urllib.request.urlopen(req, context=ctx, timeout=8) as resp:
+                    data = json.loads(resp.read().decode('utf-8'))
+                    for item in data.get('ergebnisliste', []):
+                        ref = item.get('referenznummer')
+                        if not ref:
+                            continue
+                        locs = item.get('stellenlokationen', [])
+                        loc_str = city
+                        if locs and isinstance(locs, list) and len(locs) > 0:
+                            addr = locs[0].get('adresse', {})
+                            loc_str = f"{addr.get('ort', city)} ({addr.get('plz', '')})"
+                        
+                        title_clean = item.get('stellenangebotsTitel') or item.get('hauptberuf', '')
+                        jobs.append({
+                            'id': f"ba_{ref}",
+                            'title': title_clean,
+                            'company': item.get('firma', 'Regional Employer'),
+                            'location': loc_str,
+                            'description': f"{title_clean} at {item.get('firma', '')} in {loc_str}. Reference: {ref}",
+                            'url': f"https://www.arbeitsagentur.de/jobsuche/jobdetail/{ref}",
+                            'timestamp': item.get('datumErsteVeroeffentlichung') or item.get('aenderungsdatum')
+                        })
+            except Exception:
+                pass
+            time.sleep(0.15)
+    return jobs
+
+def fetch_from_linkedin():
+    """Ingests live LinkedIn postings posted within the last 24h across target regions."""
+    locations = ["Ulm", "Stuttgart", "Munich", "Germany"]
+    jobs = []
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    }
+    for loc in locations:
+        encoded_loc = urllib.parse.quote(loc)
+        url = f"https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=working%20student&location={encoded_loc}&f_TPR=r86400"
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                html = resp.read().decode('utf-8')
+                titles = re.findall(r'<h3 class="base-search-card__title">([\s\S]*?)</h3>', html)
+                links = re.findall(r'<a class="base-card__full-link[^"]*" href="([^"]+)"', html)
+                companies = re.findall(r'<h4 class="base-search-card__subtitle">([\s\S]*?)</h4>', html)
+                locs = re.findall(r'<span class="job-search-card__location">([\s\S]*?)</span>', html)
+                
+                count = min(len(titles), len(links))
+                for i in range(count):
+                    title_clean = re.sub(r'<[^>]+>', '', titles[i]).strip()
+                    link_clean = links[i].split('?')[0]
+                    co_clean = re.sub(r'<[^>]+>', '', companies[i]).strip() if i < len(companies) else "Employer"
+                    loc_clean = re.sub(r'<[^>]+>', '', locs[i]).strip() if i < len(locs) else loc
+                    
+                    job_urn = re.search(r'view/(\d+)', link_clean)
+                    job_id = f"li_{job_urn.group(1)}" if job_urn else f"li_{abs(hash(link_clean))}"
+                    
+                    jobs.append({
+                        'id': job_id,
+                        'title': title_clean,
+                        'company': co_clean,
+                        'location': loc_clean,
+                        'description': f"{title_clean} at {co_clean} in {loc_clean}",
+                        'url': link_clean,
+                        'timestamp': datetime.now(timezone.utc).timestamp()
+                    })
+        except Exception:
+            pass
+        time.sleep(0.2)
+    return jobs
+
+def fetch_from_remoteok():
+    """Ingests international & European tech roles eligible for Germany."""
+    url = "https://remoteok.com/api"
+    req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+            jobs = []
+            for j in data[1:]:
+                if not isinstance(j, dict):
+                    continue
+                jobs.append({
+                    'id': f"ro_{j.get('id', '')}",
+                    'title': j.get('position', ''),
+                    'company': j.get('company', 'Tech Firm'),
+                    'location': j.get('location', 'Remote Germany'),
+                    'description': j.get('description', ''),
+                    'url': j.get('url', ''),
+                    'timestamp': j.get('epoch')
+                })
+            return jobs
+    except Exception:
         return []
 
 def run_multi_company_radar():
     print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Launching Multi-Company Radar (Only Today's Postings)...")
     
-    # Ingest from multiple company feeds
-    all_raw_jobs = fetch_from_arbeitnow() + fetch_from_jobicy()
+    # Ingest from all 5 multi-company networks
+    all_raw_jobs = (
+        fetch_from_arbeitnow() + 
+        fetch_from_jobicy() + 
+        fetch_from_arbeitsagentur() + 
+        fetch_from_linkedin() + 
+        fetch_from_remoteok()
+    )
     print(f"Retrieved {len(all_raw_jobs)} live job listings across multi-company feeds.")
 
     new_qualified = []
@@ -336,15 +510,19 @@ def run_multi_company_radar():
         if not is_geo_ok:
             continue
             
-        # 3. MANDATORY STUDENT GATE: ONLY Working Student, Internships, Student Jobs!
+        # 3. Knockout: Is the title written in German? (e.g. Werkstudent, Praktikant, Einkauf)
+        if is_title_in_german(title):
+            continue
+            
+        # 4. MANDATORY STUDENT GATE: ONLY Working Student, Internships, Student Jobs!
         if not is_student_or_intern_job(title, description):
             continue
             
-        # 4. Knockout: Marketing & HR
+        # 5. Knockout: Marketing & HR
         if is_marketing_or_hr(title, description):
             continue
             
-        # 4. Knockout: Is the job written in German?
+        # 6. Knockout: Is the job written in German?
         if is_written_in_german(description):
             continue
             
