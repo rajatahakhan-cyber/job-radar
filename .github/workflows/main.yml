@@ -1,0 +1,32 @@
+name: Raja Job Radar 24/7 Cloud Engine
+
+on:
+  schedule:
+    # Runs automatically every 30 minutes, 24/7/365, without your laptop
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  scan-and-alert:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Execute Job Radar Engine
+        run: |
+          python job_radar_engine.py
+
+      - name: Save Seen Jobs
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "chore: update seen_jobs [skip ci]"
+          file_pattern: "seen_jobs.json"
